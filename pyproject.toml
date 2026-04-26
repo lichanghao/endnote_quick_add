@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "endnote-quick-add"
+version = "0.1.0"
+description = "Fast CLI to add a paper (citation + PDF) to EndNote on Mac."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Changhao Li" }]
+license = { text = "MIT" }
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "requests-mock>=1.11",
+]
+
+[project.scripts]
+eqa = "endnote_quick_add.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
