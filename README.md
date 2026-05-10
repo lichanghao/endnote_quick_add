@@ -14,6 +14,22 @@ pipx install -e /path/to/endnote_quick_add_tool
 
 (or `pip install -e .` inside a venv)
 
+To bypass most Cloudflare TLS-fingerprint blocks on publisher sites
+(`journals.aps.org`, `linkinghub.elsevier.com`, etc.), install the optional
+`cloudflare` extra. It pulls in [`curl_cffi`](https://github.com/lexiforest/curl_cffi),
+which makes publisher requests using a real Chrome TLS/JA3 fingerprint:
+
+```bash
+pipx install -e '/path/to/endnote_quick_add_tool[cloudflare]'
+# or, if already installed:
+pipx inject endnote-quick-add curl_cffi
+```
+
+When `curl_cffi` is importable, `eqa` uses it automatically for publisher and
+Sci-Hub fetches; arXiv and Unpaywall keep using plain `requests`. Hard
+challenges (interactive Turnstile, login walls) still fall back to the browser
+handoff described below.
+
 The first run creates a config template at
 `~/.config/endnote_quick_add/config.toml`. Edit it — at minimum set `email`
 (Unpaywall requires it) and `endnote_app` to your installed version, e.g.
@@ -64,8 +80,11 @@ university access there, download the PDF manually, then rerun with
    - **Publisher URL** directly (works on always-on VPN / on-campus). The tool
      looks for `<meta name="citation_pdf_url">` on the landing page.
    - **Sci-Hub** mirror (optional, configured in `scihub_mirror`).
-   If a publisher page presents a Cloudflare challenge, the tool does not try to
-   bypass it. It opens the article URL in your browser for manual login/download.
+
+   Publisher and Sci-Hub fetches use `curl_cffi` (when installed) to impersonate
+   a real Chrome's TLS fingerprint, which clears most passive Cloudflare blocks.
+   If a Cloudflare challenge still comes back (cookies, Turnstile, login wall),
+   `eqa` opens the article URL in your browser for manual login/download.
 3. **Write a RIS file** mapping CrossRef metadata to RIS tags, with `L1  -
    file://...` so EndNote attaches the PDF.
 4. **Hand off to EndNote** via `open -a "EndNote 21" citation.ris`. EndNote's

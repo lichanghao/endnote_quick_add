@@ -5,8 +5,10 @@ from pathlib import Path
 import pytest
 import requests_mock
 
+from endnote_quick_add import pdf_fetcher
 from endnote_quick_add.pdf_fetcher import (
     _extract_arxiv_id,
+    _http_get,
     fetch_pdf,
     fetch_pdf_with_handoff,
     use_local_pdf,
@@ -220,6 +222,42 @@ def test_use_local_pdf_copies_into_cache(tmp_path: Path):
     assert result.source == "manual"
     assert result.pdf_path.exists()
     assert result.pdf_path.read_bytes() == PDF_BYTES
+
+
+def test_http_get_dispatches_to_curl_cffi_when_enabled(monkeypatch):
+    """When USE_CURL_CFFI is on and curl_cffi is importable, _http_get must
+    route through it with a Chrome impersonation. This is the bypass path."""
+    if not pdf_fetcher.HAS_CURL_CFFI:
+        pytest.skip("curl_cffi not installed; install with [cloudflare] extra")
+
+    captured: dict = {}
+
+    class _StubModule:
+        @staticmethod
+        def get(url, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return "stub-response"
+
+    monkeypatch.setattr(pdf_fetcher, "USE_CURL_CFFI", True)
+    monkeypatch.setattr(pdf_fetcher, "_cf_requests", _StubModule)
+
+    resp = _http_get("https://example.com/x", headers={"X": "1"}, timeout=5.0, stream=True)
+    assert resp == "stub-response"
+    assert captured["url"] == "https://example.com/x"
+    assert captured["kwargs"]["impersonate"] == pdf_fetcher.IMPERSONATE
+    assert captured["kwargs"]["stream"] is True
+    assert captured["kwargs"]["headers"] == {"X": "1"}
+
+
+def test_http_get_falls_back_to_requests_when_curl_cffi_disabled(tmp_path: Path):
+    """The conftest fixture flips USE_CURL_CFFI off; _http_get must then go
+    through plain requests so requests_mock can intercept."""
+    with requests_mock.Mocker() as m:
+        m.get("https://example.com/probe", text="ok")
+        resp = _http_get("https://example.com/probe", timeout=5.0)
+    assert resp.status_code == 200
+    assert resp.text == "ok"
 
 
 def test_use_local_pdf_rejects_non_pdf(tmp_path: Path):

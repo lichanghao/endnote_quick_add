@@ -12,6 +12,20 @@ from bs4 import BeautifulSoup
 
 from .resolver import CrossRefRecord
 
+try:
+    from curl_cffi import requests as _cf_requests  # type: ignore
+    HAS_CURL_CFFI = True
+except ImportError:
+    _cf_requests = None
+    HAS_CURL_CFFI = False
+
+# When True (and curl_cffi is installed), publisher/Sci-Hub requests go through
+# curl_cffi with a real Chrome TLS/JA3 fingerprint. That sidesteps the most
+# common Cloudflare block, which keys off TLS-fingerprint mismatch with the
+# claimed User-Agent. Tests flip this off so requests_mock keeps working.
+USE_CURL_CFFI = HAS_CURL_CFFI
+IMPERSONATE = "chrome124"
+
 ARXIV_DOI_RE = re.compile(r"10\.48550/arxiv\.([\w.\-/]+)", re.IGNORECASE)
 ARXIV_URL_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/([\w.\-/]+?)(?:v\d+)?(?:\.pdf)?(?:[/?#]|$)", re.IGNORECASE)
 PDF_BROWSER_HEADERS = {
@@ -22,6 +36,36 @@ PDF_BROWSER_HEADERS = {
     ),
     "Accept": "application/pdf,*/*;q=0.8",
 }
+
+
+def _http_get(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
+    timeout: float = 20.0,
+    stream: bool = False,
+    allow_redirects: bool = True,
+):
+    """Dispatch to curl_cffi (with browser TLS impersonation) or plain requests."""
+    if USE_CURL_CFFI and _cf_requests is not None:
+        return _cf_requests.get(
+            url,
+            headers=headers,
+            params=params,
+            timeout=timeout,
+            stream=stream,
+            allow_redirects=allow_redirects,
+            impersonate=IMPERSONATE,
+        )
+    return requests.get(
+        url,
+        headers=headers,
+        params=params,
+        timeout=timeout,
+        stream=stream,
+        allow_redirects=allow_redirects,
+    )
 
 
 @dataclass
@@ -36,7 +80,7 @@ class CloudflareBlocked(PermissionError):
         self.url = url
 
 
-def _is_cloudflare_challenge(resp: requests.Response) -> bool:
+def _is_cloudflare_challenge(resp) -> bool:
     if resp.headers.get("cf-mitigated", "").lower() == "challenge":
         return True
     if resp.status_code not in {403, 429, 503}:
@@ -47,10 +91,11 @@ def _is_cloudflare_challenge(resp: requests.Response) -> bool:
     return any(marker in body for marker in ("cloudflare", "just a moment", "challenge"))
 
 
-def _raise_for_status(resp: requests.Response) -> None:
+def _raise_for_status(resp) -> None:
     try:
         resp.raise_for_status()
-    except requests.HTTPError as e:
+    except Exception as e:
+        # Both requests.HTTPError and curl_cffi's HTTPError land here.
         if _is_cloudflare_challenge(resp):
             raise CloudflareBlocked(
                 "server blocked the automated request with a Cloudflare challenge; "
@@ -84,7 +129,7 @@ def _browser_handoff_url(record: CrossRefRecord, blocked_url: str | None = None)
     return blocked_url or ""
 
 
-def _looks_like_pdf(resp: requests.Response) -> bool:
+def _looks_like_pdf(resp) -> bool:
     ct = resp.headers.get("Content-Type", "").lower()
     if "application/pdf" in ct:
         return True
@@ -95,7 +140,7 @@ def _looks_like_pdf(resp: requests.Response) -> bool:
 
 
 def _download(url: str, dest: Path, *, timeout: float = 30.0) -> None:
-    with requests.get(url, headers=PDF_BROWSER_HEADERS, stream=True, timeout=timeout, allow_redirects=True) as r:
+    with _http_get(url, headers=PDF_BROWSER_HEADERS, stream=True, timeout=timeout) as r:
         _raise_for_status(r)
         # Quick sanity check on first chunk.
         first = next(r.iter_content(8192), b"")
@@ -175,7 +220,7 @@ def _meta_pdf_url(html: str, base_url: str) -> str | None:
 def try_publisher(record: CrossRefRecord, dest: Path) -> bool:
     if not record.url:
         raise LookupError("record has no publisher URL")
-    r = requests.get(record.url, headers=PDF_BROWSER_HEADERS, timeout=20, allow_redirects=True)
+    r = _http_get(record.url, headers=PDF_BROWSER_HEADERS, timeout=20)
     _raise_for_status(r)
     if _looks_like_pdf(r):
         dest.write_bytes(r.content)
@@ -195,7 +240,7 @@ def try_scihub(record: CrossRefRecord, dest: Path, *, mirror: str) -> bool:
         raise LookupError("record has no DOI")
     base = mirror.rstrip("/")
     page = f"{base}/{record.doi}"
-    r = requests.get(page, headers=PDF_BROWSER_HEADERS, timeout=20, allow_redirects=True)
+    r = _http_get(page, headers=PDF_BROWSER_HEADERS, timeout=20)
     _raise_for_status(r)
     soup = BeautifulSoup(r.text, "html.parser")
     src = None

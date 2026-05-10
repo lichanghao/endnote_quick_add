@@ -39,8 +39,10 @@ citation file with the PDF attached via the `L1` tag, and hands the file to
 EndNote with `open -a`. EndNote's import dialog adds the entry + linked PDF
 to the currently-open library.
 
-**Stack.** Python 3.10+, `requests`, `beautifulsoup4`. macOS only (uses
-`open -a`).
+**Stack.** Python 3.10+, `requests`, `beautifulsoup4`. Optional `curl_cffi`
+(install with the `[cloudflare]` extra) gives publisher/Sci-Hub fetches a real
+Chrome TLS/JA3 fingerprint, which clears most passive Cloudflare blocks.
+macOS only (uses `open -a`).
 
 ---
 
@@ -154,9 +156,20 @@ The orchestrator validates that downloaded bytes start with `%PDF` (catches
 HTML error pages disguised as PDFs) and cleans up partial downloads
 between source attempts.
 
-When a publisher returns a Cloudflare challenge, the CLI opens the DOI or
-publisher page in the user's normal browser for manual university-login access
-instead of trying to work around the challenge.
+**HTTP transport.** `_http_get` dispatches to either `curl_cffi.requests` (when
+installed and `USE_CURL_CFFI` is true) or plain `requests`. The `curl_cffi`
+path impersonates Chrome at the TLS layer (`IMPERSONATE = "chrome124"`), which
+is what clears the common Cloudflare TLS-fingerprint block. Only
+publisher/Sci-Hub-facing calls (`_download`, `try_publisher`, `try_scihub`)
+route through the dispatcher; the CrossRef and Unpaywall JSON APIs stay on
+plain `requests`. Tests pin `USE_CURL_CFFI = False` via `tests/conftest.py` so
+`requests_mock` can still intercept everything.
+
+When `_raise_for_status` still detects a Cloudflare challenge after the
+TLS-impersonation attempt (cookies, Turnstile, login wall — things curl_cffi
+can't solve on its own), the CLI opens the DOI or publisher page in the user's
+normal browser for manual university-login access instead of trying to work
+around the challenge.
 
 ### `ris_writer.py`
 
