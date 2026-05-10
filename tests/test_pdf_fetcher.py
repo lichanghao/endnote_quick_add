@@ -7,8 +7,11 @@ import requests_mock
 
 from endnote_quick_add import pdf_fetcher
 from endnote_quick_add.pdf_fetcher import (
+    CookieLoadError,
     _extract_arxiv_id,
     _http_get,
+    _load_browser_cookies,
+    _registered_domain,
     fetch_pdf,
     fetch_pdf_with_handoff,
     use_local_pdf,
@@ -258,6 +261,90 @@ def test_http_get_falls_back_to_requests_when_curl_cffi_disabled(tmp_path: Path)
         resp = _http_get("https://example.com/probe", timeout=5.0)
     assert resp.status_code == 200
     assert resp.text == "ok"
+
+
+def test_registered_domain_extracts_etld_plus_one():
+    assert _registered_domain("https://journals.aps.org/prl/abstract/10.1103/x") == "aps.org"
+    assert _registered_domain("https://www.nature.com/articles/x") == "nature.com"
+    assert _registered_domain("https://example.com/x") == "example.com"
+    # Single-label hosts (rare) fall through unchanged.
+    assert _registered_domain("https://localhost/x") == "localhost"
+
+
+def test_load_browser_cookies_raises_when_helper_missing(monkeypatch):
+    monkeypatch.setattr(pdf_fetcher, "_bc3", None)
+    with pytest.raises(CookieLoadError, match="not installed"):
+        _load_browser_cookies("chrome", "https://journals.aps.org/prl/abstract/x")
+
+
+def test_load_browser_cookies_raises_for_unsupported_browser(monkeypatch):
+    class _StubBC3:
+        pass  # no .chrome/.safari/etc. attributes
+
+    monkeypatch.setattr(pdf_fetcher, "_bc3", _StubBC3())
+    with pytest.raises(CookieLoadError, match="unsupported browser"):
+        _load_browser_cookies("netscape", "https://example.com/x")
+
+
+def test_load_browser_cookies_returns_dict_from_jar(monkeypatch):
+    class _Cookie:
+        def __init__(self, name, value):
+            self.name = name
+            self.value = value
+
+    captured: dict = {}
+
+    class _StubBC3:
+        @staticmethod
+        def chrome(domain_name):
+            captured["domain_name"] = domain_name
+            return [_Cookie("cf_clearance", "abc123"), _Cookie("session", "xyz")]
+
+    monkeypatch.setattr(pdf_fetcher, "_bc3", _StubBC3())
+    cookies = _load_browser_cookies("chrome", "https://journals.aps.org/prl/abstract/x")
+    assert cookies == {"cf_clearance": "abc123", "session": "xyz"}
+    # Lookup should target eTLD+1, not the full hostname, so cookies set on
+    # .aps.org (the common case) get included.
+    assert captured["domain_name"] == "aps.org"
+
+
+def test_publisher_with_browser_cookies_sends_cookie_header(tmp_path: Path, monkeypatch):
+    """End-to-end: when --browser-cookies is set, the publisher request must
+    actually carry the loaded cookies in the Cookie header."""
+    class _Cookie:
+        def __init__(self, name, value):
+            self.name = name
+            self.value = value
+
+    class _StubBC3:
+        @staticmethod
+        def chrome(domain_name):
+            return [_Cookie("cf_clearance", "abc123")]
+
+    monkeypatch.setattr(pdf_fetcher, "_bc3", _StubBC3())
+
+    rec = make_record(url="https://journals.aps.org/prl/abstract/10.1103/lk32-njx7")
+    landing_html = (
+        '<html><head>'
+        '<meta name="citation_pdf_url" content="https://journals.aps.org/prl/pdf/lk32-njx7">'
+        '</head></html>'
+    )
+    with requests_mock.Mocker() as m:
+        m.get("https://journals.aps.org/prl/abstract/10.1103/lk32-njx7", text=landing_html)
+        m.get("https://journals.aps.org/prl/pdf/lk32-njx7", content=PDF_BYTES)
+        result, log, handoff = fetch_pdf_with_handoff(
+            rec,
+            cache_dir=tmp_path,
+            unpaywall_email=None,
+            scihub_mirror=None,
+            browser_cookies="chrome",
+        )
+        # Both the landing page and the PDF fetch should have carried the cookie.
+        sent_cookies = [req.headers.get("Cookie", "") for req in m.request_history]
+
+    assert result is not None and result.source == "publisher"
+    assert handoff is None
+    assert all("cf_clearance=abc123" in c for c in sent_cookies)
 
 
 def test_use_local_pdf_rejects_non_pdf(tmp_path: Path):

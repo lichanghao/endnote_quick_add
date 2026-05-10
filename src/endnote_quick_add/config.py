@@ -24,6 +24,12 @@ endnote_app = "EndNote 21"
 # Leave blank or remove to disable.
 scihub_mirror = ""
 
+# Optional: reuse cookies from your real browser when fetching from publishers
+# behind Cloudflare/login walls (e.g. journals.aps.org). Requires the
+# [cloudflare] extra. Supported: "chrome", "safari", "firefox", "edge", "brave".
+# Leave blank to disable. First Chrome read on macOS triggers a Keychain prompt.
+browser_cookies = ""
+
 # Where downloaded PDFs and generated RIS files are cached.
 cache_dir = "~/.cache/endnote_quick_add"
 """
@@ -34,6 +40,7 @@ class Config:
     email: str
     endnote_app: str
     scihub_mirror: str
+    browser_cookies: str
     cache_dir: Path
 
     @property
@@ -64,5 +71,6 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         email=data.get("email", ""),
         endnote_app=data.get("endnote_app", "EndNote 21"),
         scihub_mirror=data.get("scihub_mirror", ""),
+        browser_cookies=data.get("browser_cookies", ""),
         cache_dir=cache_dir,
     )

@@ -165,6 +165,18 @@ route through the dispatcher; the CrossRef and Unpaywall JSON APIs stay on
 plain `requests`. Tests pin `USE_CURL_CFFI = False` via `tests/conftest.py` so
 `requests_mock` can still intercept everything.
 
+**Browser-cookie reuse.** When `try_publisher` / `try_scihub` are called with
+`browser_cookies="chrome"` (or `"safari"`, `"firefox"`, `"edge"`, `"brave"`),
+`_load_browser_cookies` uses `browser_cookie3` to extract cookies for the URL's
+registered domain (eTLD+1 via `_registered_domain`) from the user's real
+browser profile. Those cookies — `cf_clearance`, university SSO session
+tokens, etc. — are passed as a dict into `_http_get` and reused for the
+follow-up PDF download on the same domain. This is what gets paywalled APS /
+Elsevier / ACS articles when TLS impersonation alone falls short. On macOS,
+reading Chrome cookies triggers a Keychain prompt the first time; failures
+raise `CookieLoadError`, which surfaces in the attempt log just like any
+other source failure.
+
 When `_raise_for_status` still detects a Cloudflare challenge after the
 TLS-impersonation attempt (cookies, Turnstile, login wall — things curl_cffi
 can't solve on its own), the CLI opens the DOI or publisher page in the user's

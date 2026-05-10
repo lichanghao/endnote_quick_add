@@ -20,7 +20,10 @@ dependencies = [
 # Adds browser-TLS-impersonating HTTP transport so publishers behind
 # Cloudflare's TLS-fingerprint check stop returning 403/503 challenges.
 # Install with: pip install endnote-quick-add[cloudflare]
-cloudflare = ["curl_cffi>=0.7"]
+cloudflare = [
+    "curl_cffi>=0.7",
+    "browser_cookie3>=0.19",
+]
 dev = [
     "pytest>=8",
     "requests-mock>=1.11",

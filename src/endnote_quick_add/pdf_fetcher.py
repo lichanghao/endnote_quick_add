@@ -19,12 +19,55 @@ except ImportError:
     _cf_requests = None
     HAS_CURL_CFFI = False
 
+try:
+    import browser_cookie3 as _bc3  # type: ignore
+    HAS_BROWSER_COOKIE3 = True
+except ImportError:
+    _bc3 = None
+    HAS_BROWSER_COOKIE3 = False
+
 # When True (and curl_cffi is installed), publisher/Sci-Hub requests go through
 # curl_cffi with a real Chrome TLS/JA3 fingerprint. That sidesteps the most
 # common Cloudflare block, which keys off TLS-fingerprint mismatch with the
 # claimed User-Agent. Tests flip this off so requests_mock keeps working.
 USE_CURL_CFFI = HAS_CURL_CFFI
 IMPERSONATE = "chrome124"
+
+
+class CookieLoadError(RuntimeError):
+    pass
+
+
+def _registered_domain(url: str) -> str:
+    """Best-effort eTLD+1 for cookie lookup. Good enough for journal hosts
+    like journals.aps.org (-> aps.org) and www.nature.com (-> nature.com)."""
+    host = urlparse(url).hostname or ""
+    parts = host.split(".")
+    if len(parts) <= 2:
+        return host
+    return ".".join(parts[-2:])
+
+
+def _load_browser_cookies(browser: str, url: str) -> dict[str, str]:
+    """Pull cookies for `url`'s registered domain from the user's real browser.
+
+    Triggers a macOS Keychain prompt the first time it reads Chrome cookies —
+    click "Always Allow" to suppress on subsequent runs. Raises CookieLoadError
+    on any failure so the orchestrator can surface a useful attempt-log entry."""
+    if _bc3 is None:
+        raise CookieLoadError(
+            "browser_cookie3 is not installed; "
+            "install with: pip install 'endnote-quick-add[cloudflare]'"
+        )
+    fn = getattr(_bc3, browser.lower(), None)
+    if fn is None:
+        raise CookieLoadError(f"unsupported browser: {browser!r}")
+    domain = _registered_domain(url)
+    try:
+        jar = fn(domain_name=domain)
+    except Exception as e:
+        raise CookieLoadError(f"could not read cookies from {browser} for {domain}: {e}") from e
+    return {c.name: c.value for c in jar}
 
 ARXIV_DOI_RE = re.compile(r"10\.48550/arxiv\.([\w.\-/]+)", re.IGNORECASE)
 ARXIV_URL_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/([\w.\-/]+?)(?:v\d+)?(?:\.pdf)?(?:[/?#]|$)", re.IGNORECASE)
@@ -43,6 +86,7 @@ def _http_get(
     *,
     headers: dict[str, str] | None = None,
     params: dict[str, str] | None = None,
+    cookies: dict[str, str] | None = None,
     timeout: float = 20.0,
     stream: bool = False,
     allow_redirects: bool = True,
@@ -53,6 +97,7 @@ def _http_get(
             url,
             headers=headers,
             params=params,
+            cookies=cookies,
             timeout=timeout,
             stream=stream,
             allow_redirects=allow_redirects,
@@ -62,6 +107,7 @@ def _http_get(
         url,
         headers=headers,
         params=params,
+        cookies=cookies,
         timeout=timeout,
         stream=stream,
         allow_redirects=allow_redirects,
@@ -139,8 +185,12 @@ def _looks_like_pdf(resp) -> bool:
     return False
 
 
-def _download(url: str, dest: Path, *, timeout: float = 30.0) -> None:
-    with _http_get(url, headers=PDF_BROWSER_HEADERS, stream=True, timeout=timeout) as r:
+def _download(
+    url: str, dest: Path, *, timeout: float = 30.0, cookies: dict[str, str] | None = None
+) -> None:
+    with _http_get(
+        url, headers=PDF_BROWSER_HEADERS, stream=True, timeout=timeout, cookies=cookies
+    ) as r:
         _raise_for_status(r)
         # Quick sanity check on first chunk.
         first = next(r.iter_content(8192), b"")
@@ -217,10 +267,13 @@ def _meta_pdf_url(html: str, base_url: str) -> str | None:
     return None
 
 
-def try_publisher(record: CrossRefRecord, dest: Path) -> bool:
+def try_publisher(
+    record: CrossRefRecord, dest: Path, *, browser_cookies: str | None = None
+) -> bool:
     if not record.url:
         raise LookupError("record has no publisher URL")
-    r = _http_get(record.url, headers=PDF_BROWSER_HEADERS, timeout=20)
+    cookies = _load_browser_cookies(browser_cookies, record.url) if browser_cookies else None
+    r = _http_get(record.url, headers=PDF_BROWSER_HEADERS, timeout=20, cookies=cookies)
     _raise_for_status(r)
     if _looks_like_pdf(r):
         dest.write_bytes(r.content)
@@ -231,16 +284,26 @@ def try_publisher(record: CrossRefRecord, dest: Path) -> bool:
     pdf_url = _meta_pdf_url(r.text, r.url)
     if not pdf_url:
         raise LookupError("publisher page has no citation_pdf_url meta tag or PDF link")
-    _download(pdf_url, dest)
+    # Reuse the same cookies for the PDF fetch — same registered domain in
+    # nearly all cases (publisher landing → publisher CDN), and even when not,
+    # extra cookies are harmless.
+    _download(pdf_url, dest, cookies=cookies)
     return True
 
 
-def try_scihub(record: CrossRefRecord, dest: Path, *, mirror: str) -> bool:
+def try_scihub(
+    record: CrossRefRecord,
+    dest: Path,
+    *,
+    mirror: str,
+    browser_cookies: str | None = None,
+) -> bool:
     if not record.doi:
         raise LookupError("record has no DOI")
     base = mirror.rstrip("/")
     page = f"{base}/{record.doi}"
-    r = _http_get(page, headers=PDF_BROWSER_HEADERS, timeout=20)
+    cookies = _load_browser_cookies(browser_cookies, page) if browser_cookies else None
+    r = _http_get(page, headers=PDF_BROWSER_HEADERS, timeout=20, cookies=cookies)
     _raise_for_status(r)
     soup = BeautifulSoup(r.text, "html.parser")
     src = None
@@ -257,7 +320,7 @@ def try_scihub(record: CrossRefRecord, dest: Path, *, mirror: str) -> bool:
     src = urljoin(r.url, src)
     # Strip fragment (Sci-Hub appends #view=FitH etc.).
     src = src.split("#", 1)[0]
-    _download(src, dest)
+    _download(src, dest, cookies=cookies)
     return True
 
 
@@ -279,6 +342,7 @@ def fetch_pdf(
     unpaywall_email: str | None,
     scihub_mirror: str | None,
     override_url: str | None = None,
+    browser_cookies: str | None = None,
 ) -> tuple[FetchResult | None, list[str]]:
     result, log, _ = fetch_pdf_with_handoff(
         record,
@@ -286,6 +350,7 @@ def fetch_pdf(
         unpaywall_email=unpaywall_email,
         scihub_mirror=scihub_mirror,
         override_url=override_url,
+        browser_cookies=browser_cookies,
     )
     return result, log
 
@@ -297,6 +362,7 @@ def fetch_pdf_with_handoff(
     unpaywall_email: str | None,
     scihub_mirror: str | None,
     override_url: str | None = None,
+    browser_cookies: str | None = None,
 ) -> tuple[FetchResult | None, list[str], BrowserHandoff | None]:
     """Try each PDF source in order.
 
@@ -311,6 +377,7 @@ def fetch_pdf_with_handoff(
     handoff: BrowserHandoff | None = None
 
     if override_url:
+        # No cookies on a manual override URL — the user already picked it.
         try:
             _download(override_url, dest)
             return FetchResult(pdf_path=dest, source="manual"), [f"manual: {override_url}"], None
@@ -326,9 +393,9 @@ def fetch_pdf_with_handoff(
     ]
     if unpaywall_email:
         sources.append(("unpaywall", lambda: try_unpaywall(record, dest, email=unpaywall_email)))
-    sources.append(("publisher", lambda: try_publisher(record, dest)))
+    sources.append(("publisher", lambda: try_publisher(record, dest, browser_cookies=browser_cookies)))
     if scihub_mirror:
-        sources.append(("scihub", lambda: try_scihub(record, dest, mirror=scihub_mirror)))
+        sources.append(("scihub", lambda: try_scihub(record, dest, mirror=scihub_mirror, browser_cookies=browser_cookies)))
 
     for name, fn in sources:
         try:

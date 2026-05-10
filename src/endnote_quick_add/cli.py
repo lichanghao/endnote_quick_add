@@ -56,6 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-pdf", action="store_true", help="Don't attach a PDF; import citation only.")
     p.add_argument("--app", help="EndNote application name (overrides config).")
     p.add_argument("--dry-run", action="store_true", help="Show what would happen but don't import to EndNote.")
+    p.add_argument(
+        "--browser-cookies",
+        choices=["chrome", "safari", "firefox", "edge", "brave"],
+        default=None,
+        help="Reuse cookies from this browser for publisher fetches "
+        "(bypasses login walls and Cloudflare clearance). Requires the [cloudflare] extra.",
+    )
     p.add_argument("--config", help="Path to config TOML.", default=None)
     return p
 
@@ -106,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
                 unpaywall_email=cfg.email if cfg.has_unpaywall else None,
                 scihub_mirror=cfg.scihub_mirror if cfg.has_scihub else None,
                 override_url=args.pdf,
+                browser_cookies=args.browser_cookies or (cfg.browser_cookies or None),
             )
             for line in fetch_log:
                 print(f"  {line}")

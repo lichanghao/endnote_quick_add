@@ -70,6 +70,29 @@ If a publisher blocks the automated PDF request with a Cloudflare challenge,
 university access there, download the PDF manually, then rerun with
 `--pdf ~/Downloads/paper.pdf` to attach it.
 
+### Reusing your browser session (recommended for paywalled journals)
+
+For sites where TLS impersonation alone isn't enough — APS journals, Elsevier,
+ACS — `eqa` can pull cookies from your real, logged-in browser and replay them
+on the publisher request. This carries both your `cf_clearance` (the
+Cloudflare-issued bypass cookie) and your university-SSO session, so the same
+stuff that works in your browser works headlessly:
+
+```bash
+eqa --browser-cookies chrome 10.1103/fyx7-jb1d
+```
+
+Or set it as the default in `~/.config/endnote_quick_add/config.toml`:
+
+```toml
+browser_cookies = "chrome"   # also: "safari", "firefox", "edge", "brave"
+```
+
+The first time `eqa` reads Chrome cookies on macOS, the system asks Keychain to
+release "Chrome Safe Storage" — click **Always Allow** to skip the prompt on
+later runs. Cookies are scoped to the publisher's registered domain (e.g.
+`aps.org`) so unrelated cookies are not sent.
+
 ## How it works
 
 1. **Resolve** the input via the CrossRef API. DOI → direct lookup; title →
