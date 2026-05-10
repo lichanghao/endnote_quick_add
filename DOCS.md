@@ -171,11 +171,21 @@ plain `requests`. Tests pin `USE_CURL_CFFI = False` via `tests/conftest.py` so
 registered domain (eTLD+1 via `_registered_domain`) from the user's real
 browser profile. Those cookies — `cf_clearance`, university SSO session
 tokens, etc. — are passed as a dict into `_http_get` and reused for the
-follow-up PDF download on the same domain. This is what gets paywalled APS /
-Elsevier / ACS articles when TLS impersonation alone falls short. On macOS,
-reading Chrome cookies triggers a Keychain prompt the first time; failures
-raise `CookieLoadError`, which surfaces in the attempt log just like any
-other source failure.
+follow-up PDF download on the same domain. This clears paywalled Elsevier /
+ACS / Wiley / Springer / IEEE pages when TLS impersonation alone falls short.
+On macOS, reading Chrome cookies triggers a Keychain prompt the first time;
+failures raise `CookieLoadError`, which surfaces in the attempt log just like
+any other source failure.
+
+**APS limitation.** `journals.aps.org` runs Cloudflare's strict "managed
+challenge" mode and regenerates a short-lived `__cf_bm` cookie on every
+JS-challenge solve. That cookie is partitioned / in-memory in modern Chrome,
+so `browser_cookie3` can't pull it and replay isn't sufficient. For APS the
+chain falls through to the existing `BrowserHandoff` path (the user opens the
+article in their browser, downloads, and reruns with `--pdf`). A real headless
+browser (Playwright with the user's Chrome profile) would be the only way to
+fully automate APS; intentionally not implemented here because the dependency
+weight isn't worth it for one publisher.
 
 When `_raise_for_status` still detects a Cloudflare challenge after the
 TLS-impersonation attempt (cookies, Turnstile, login wall — things curl_cffi

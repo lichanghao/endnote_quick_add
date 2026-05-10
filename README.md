@@ -72,14 +72,14 @@ university access there, download the PDF manually, then rerun with
 
 ### Reusing your browser session (recommended for paywalled journals)
 
-For sites where TLS impersonation alone isn't enough — APS journals, Elsevier,
-ACS — `eqa` can pull cookies from your real, logged-in browser and replay them
-on the publisher request. This carries both your `cf_clearance` (the
-Cloudflare-issued bypass cookie) and your university-SSO session, so the same
-stuff that works in your browser works headlessly:
+For sites where TLS impersonation alone isn't enough — Elsevier, ACS, Wiley,
+Springer, IEEE — `eqa` can pull cookies from your real, logged-in browser and
+replay them on the publisher request. This carries both your `cf_clearance`
+(the Cloudflare-issued bypass cookie) and your university-SSO session, so the
+same stuff that works in your browser works headlessly:
 
 ```bash
-eqa --browser-cookies chrome 10.1103/fyx7-jb1d
+eqa --browser-cookies chrome 10.1016/j.cell.2024.01.001
 ```
 
 Or set it as the default in `~/.config/endnote_quick_add/config.toml`:
@@ -92,6 +92,22 @@ The first time `eqa` reads Chrome cookies on macOS, the system asks Keychain to
 release "Chrome Safe Storage" — click **Always Allow** to skip the prompt on
 later runs. Cookies are scoped to the publisher's registered domain (e.g.
 `aps.org`) so unrelated cookies are not sent.
+
+#### What this does and doesn't clear
+
+| Publisher pattern                    | TLS impersonation | + browser cookies | Result        |
+|--------------------------------------|-------------------|-------------------|---------------|
+| arXiv, Unpaywall, OA mirrors         | n/a               | n/a               | always works  |
+| Most Cloudflare-fronted publishers   | clears            | clears            | works         |
+| Login-walled (Elsevier/ACS/Wiley/…)  | blocks            | clears            | works with cookies |
+| **APS journals (`journals.aps.org`)**| blocks            | **still blocks**  | falls back to browser handoff |
+
+APS runs Cloudflare's strictest "managed challenge" mode, which regenerates a
+short-lived `__cf_bm` cookie on every JS challenge solve. That cookie lives
+only in the browser's in-memory store (often as a partitioned cookie), so
+`browser_cookie3` can't extract it and replay alone won't satisfy Cloudflare.
+For APS the realistic flow is: let `eqa` open the article in your browser
+(automatic on challenge), download the PDF manually, then attach with `--pdf`.
 
 ## How it works
 
