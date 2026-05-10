@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 from .config import CONFIG_PATH, load_config
 from .endnote import EndNoteNotFound, import_to_endnote
-from .pdf_fetcher import fetch_pdf, use_local_pdf
+from .pdf_fetcher import fetch_pdf_with_handoff, use_local_pdf
 from .resolver import (
     CrossRefRecord,
     fetch_by_doi,
@@ -35,6 +37,13 @@ def _pick(records: list[CrossRefRecord]) -> CrossRefRecord:
         if choice.isdigit() and 1 <= int(choice) <= len(records):
             return records[int(choice) - 1]
         print("invalid selection")
+
+
+def _open_in_browser(url: str) -> bool:
+    if shutil.which("open") is None:
+        return False
+    result = subprocess.run(["open", url], capture_output=True, text=True)
+    return result.returncode == 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -91,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
             pdf_path = result.pdf_path
             print(f"PDF: {pdf_path} (source: manual local file)")
         else:
-            result, fetch_log = fetch_pdf(
+            result, fetch_log, handoff = fetch_pdf_with_handoff(
                 record,
                 cache_dir=cfg.cache_dir,
                 unpaywall_email=cfg.email if cfg.has_unpaywall else None,
@@ -101,6 +110,23 @@ def main(argv: list[str] | None = None) -> int:
             for line in fetch_log:
                 print(f"  {line}")
             if result is None:
+                if handoff:
+                    if args.dry_run:
+                        print(
+                            "\nCloudflare blocked the automated PDF request; "
+                            f"would open {handoff.url} in your browser for manual login/download."
+                        )
+                    elif _open_in_browser(handoff.url):
+                        print(
+                            "\nCloudflare blocked the automated PDF request; "
+                            f"opened {handoff.url} in your browser for manual login/download."
+                        )
+                    else:
+                        print(
+                            "\nCloudflare blocked the automated PDF request. "
+                            f"Open this URL manually: {handoff.url}"
+                        )
+                    print("After downloading the PDF, rerun with --pdf /path/to/paper.pdf.")
                 print("\nNo PDF could be downloaded; importing citation only.\n")
             else:
                 pdf_path = result.pdf_path

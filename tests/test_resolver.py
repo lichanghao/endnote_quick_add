@@ -15,6 +15,7 @@ def test_is_doi_recognizes_plain_and_prefixed_forms():
     assert is_doi("10.1038/s41586-020-2649-2")
     assert is_doi("doi:10.1038/s41586-020-2649-2")
     assert is_doi("https://doi.org/10.1038/s41586-020-2649-2")
+    assert is_doi("https://journals.aps.org/prl/abstract/10.1103/lk32-njx7")
     assert not is_doi("attention is all you need")
     assert not is_doi("10.bad")
 
@@ -22,6 +23,7 @@ def test_is_doi_recognizes_plain_and_prefixed_forms():
 def test_normalize_doi_strips_prefixes():
     assert normalize_doi("doi:10.1/abc") == "10.1/abc"
     assert normalize_doi("https://doi.org/10.1/abc") == "10.1/abc"
+    assert normalize_doi("https://journals.aps.org/prl/abstract/10.1103/lk32-njx7") == "10.1103/lk32-njx7"
     assert normalize_doi("10.1/abc") == "10.1/abc"
 
 

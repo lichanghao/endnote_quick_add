@@ -137,6 +137,10 @@ PDF (i.e. response body starts with `%PDF`).
   orchestrator. Returns `(result, attempt_log)` where `attempt_log` is
   the list of `"<source>: ok"` / `"<source>: failed (<reason>)"` lines
   the CLI prints.
+- `fetch_pdf_with_handoff(record, *, cache_dir, unpaywall_email,
+  scihub_mirror, override_url=None) -> tuple[FetchResult | None, list[str],
+  BrowserHandoff | None]` — same source chain, plus a browser handoff URL
+  when an automated publisher request hits a Cloudflare challenge.
 - `use_local_pdf(local, record, cache_dir) -> FetchResult` — copies a
   user-supplied PDF into the cache and validates the `%PDF` header.
 - `try_arxiv`, `try_unpaywall`, `try_publisher`, `try_scihub` — individual
@@ -149,6 +153,10 @@ of `"arxiv" | "unpaywall" | "publisher" | "scihub" | "manual" | "cache"`.
 The orchestrator validates that downloaded bytes start with `%PDF` (catches
 HTML error pages disguised as PDFs) and cleans up partial downloads
 between source attempts.
+
+When a publisher returns a Cloudflare challenge, the CLI opens the DOI or
+publisher page in the user's normal browser for manual university-login access
+instead of trying to work around the challenge.
 
 ### `ris_writer.py`
 
@@ -382,7 +390,7 @@ eqa --dry-run --no-pdf 10.1038/s41586-020-2649-2
    Raise on failure (any exception type with a useful message — it ends up
    in the user-visible attempt log). On success, leave a valid PDF at
    `dest`.
-2. Slot it into the `sources` list in `fetch_pdf` at the right priority
+2. Slot it into the `sources` list in `fetch_pdf_with_handoff` at the right priority
    level. Wrap with a config gate if needed (e.g. `if config.has_X:`).
 3. Add a test mocking the new source's HTTP endpoints; for chain ordering,
    verify it does/doesn't fire when expected sources up-stream succeed.

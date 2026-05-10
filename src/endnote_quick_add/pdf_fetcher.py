@@ -25,6 +25,42 @@ PDF_BROWSER_HEADERS = {
 
 
 @dataclass
+class BrowserHandoff:
+    url: str
+    reason: str
+
+
+class CloudflareBlocked(PermissionError):
+    def __init__(self, message: str, *, url: str):
+        super().__init__(message)
+        self.url = url
+
+
+def _is_cloudflare_challenge(resp: requests.Response) -> bool:
+    if resp.headers.get("cf-mitigated", "").lower() == "challenge":
+        return True
+    if resp.status_code not in {403, 429, 503}:
+        return False
+    if "cloudflare" not in resp.headers.get("Server", "").lower():
+        return False
+    body = resp.text[:4096].lower()
+    return any(marker in body for marker in ("cloudflare", "just a moment", "challenge"))
+
+
+def _raise_for_status(resp: requests.Response) -> None:
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        if _is_cloudflare_challenge(resp):
+            raise CloudflareBlocked(
+                "server blocked the automated request with a Cloudflare challenge; "
+                "opening the article in a normal browser is required for manual access",
+                url=resp.url,
+            ) from e
+        raise
+
+
+@dataclass
 class FetchResult:
     pdf_path: Path
     source: str  # "arxiv" | "unpaywall" | "publisher" | "scihub" | "manual"
@@ -40,6 +76,14 @@ def _cache_paths(doi: str, cache_dir: Path) -> tuple[Path, Path]:
     return slug_dir, slug_dir / "paper.pdf"
 
 
+def _browser_handoff_url(record: CrossRefRecord, blocked_url: str | None = None) -> str:
+    if record.url:
+        return record.url
+    if record.doi:
+        return f"https://doi.org/{record.doi}"
+    return blocked_url or ""
+
+
 def _looks_like_pdf(resp: requests.Response) -> bool:
     ct = resp.headers.get("Content-Type", "").lower()
     if "application/pdf" in ct:
@@ -52,7 +96,7 @@ def _looks_like_pdf(resp: requests.Response) -> bool:
 
 def _download(url: str, dest: Path, *, timeout: float = 30.0) -> None:
     with requests.get(url, headers=PDF_BROWSER_HEADERS, stream=True, timeout=timeout, allow_redirects=True) as r:
-        r.raise_for_status()
+        _raise_for_status(r)
         # Quick sanity check on first chunk.
         first = next(r.iter_content(8192), b"")
         if not first.startswith(b"%PDF"):
@@ -104,7 +148,7 @@ def try_unpaywall(record: CrossRefRecord, dest: Path, *, email: str) -> bool:
     r = requests.get(api, params={"email": email}, timeout=15)
     if r.status_code == 404:
         raise LookupError("Unpaywall: DOI not indexed")
-    r.raise_for_status()
+    _raise_for_status(r)
     data = r.json()
     loc = data.get("best_oa_location") or {}
     pdf_url = loc.get("url_for_pdf") or loc.get("url")
@@ -132,7 +176,7 @@ def try_publisher(record: CrossRefRecord, dest: Path) -> bool:
     if not record.url:
         raise LookupError("record has no publisher URL")
     r = requests.get(record.url, headers=PDF_BROWSER_HEADERS, timeout=20, allow_redirects=True)
-    r.raise_for_status()
+    _raise_for_status(r)
     if _looks_like_pdf(r):
         dest.write_bytes(r.content)
         if not dest.read_bytes().startswith(b"%PDF"):
@@ -152,7 +196,7 @@ def try_scihub(record: CrossRefRecord, dest: Path, *, mirror: str) -> bool:
     base = mirror.rstrip("/")
     page = f"{base}/{record.doi}"
     r = requests.get(page, headers=PDF_BROWSER_HEADERS, timeout=20, allow_redirects=True)
-    r.raise_for_status()
+    _raise_for_status(r)
     soup = BeautifulSoup(r.text, "html.parser")
     src = None
     for tag_name in ("embed", "iframe"):
@@ -191,21 +235,46 @@ def fetch_pdf(
     scihub_mirror: str | None,
     override_url: str | None = None,
 ) -> tuple[FetchResult | None, list[str]]:
-    """Try each PDF source in order. Returns (result_or_None, attempt_log)."""
+    result, log, _ = fetch_pdf_with_handoff(
+        record,
+        cache_dir=cache_dir,
+        unpaywall_email=unpaywall_email,
+        scihub_mirror=scihub_mirror,
+        override_url=override_url,
+    )
+    return result, log
+
+
+def fetch_pdf_with_handoff(
+    record: CrossRefRecord,
+    *,
+    cache_dir: Path,
+    unpaywall_email: str | None,
+    scihub_mirror: str | None,
+    override_url: str | None = None,
+) -> tuple[FetchResult | None, list[str], BrowserHandoff | None]:
+    """Try each PDF source in order.
+
+    Returns (result_or_None, attempt_log, browser_handoff_or_None).
+    """
     _, dest = _cache_paths(record.doi or "unknown", cache_dir)
 
     if dest.exists() and dest.stat().st_size > 0 and dest.read_bytes()[:4] == b"%PDF":
-        return FetchResult(pdf_path=dest, source="cache"), ["cache: hit"]
+        return FetchResult(pdf_path=dest, source="cache"), ["cache: hit"], None
 
     log: list[str] = []
+    handoff: BrowserHandoff | None = None
 
     if override_url:
         try:
             _download(override_url, dest)
-            return FetchResult(pdf_path=dest, source="manual"), [f"manual: {override_url}"]
+            return FetchResult(pdf_path=dest, source="manual"), [f"manual: {override_url}"], None
+        except CloudflareBlocked as e:
+            log.append(f"manual: failed ({e})")
+            return None, log, BrowserHandoff(url=e.url or override_url, reason=str(e))
         except Exception as e:
             log.append(f"manual: failed ({e})")
-            return None, log
+            return None, log, None
 
     sources: list[tuple[str, Callable[[], bool]]] = [
         ("arxiv", lambda: try_arxiv(record, dest)),
@@ -220,11 +289,20 @@ def fetch_pdf(
         try:
             fn()
             log.append(f"{name}: ok")
-            return FetchResult(pdf_path=dest, source=name), log
+            return FetchResult(pdf_path=dest, source=name), log, handoff
+        except CloudflareBlocked as e:
+            log.append(f"{name}: failed ({e})")
+            if handoff is None:
+                handoff_url = _browser_handoff_url(record, e.url)
+                if handoff_url:
+                    handoff = BrowserHandoff(url=handoff_url, reason=str(e))
+            # Clean up partial download so the next source starts clean.
+            if dest.exists() and (dest.stat().st_size == 0 or not dest.read_bytes()[:4] == b"%PDF"):
+                dest.unlink(missing_ok=True)
         except Exception as e:
             log.append(f"{name}: failed ({e})")
             # Clean up partial download so the next source starts clean.
             if dest.exists() and (dest.stat().st_size == 0 or not dest.read_bytes()[:4] == b"%PDF"):
                 dest.unlink(missing_ok=True)
 
-    return None, log
+    return None, log, handoff

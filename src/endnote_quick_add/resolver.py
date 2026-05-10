@@ -7,7 +7,8 @@ from typing import Any
 import requests
 
 CROSSREF_BASE = "https://api.crossref.org/works"
-DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
+DOI_RE = re.compile(r"^10\.\d{1,9}/\S+$")
+DOI_IN_TEXT_RE = re.compile(r"10\.\d{1,9}/[^\s?#]+", re.IGNORECASE)
 
 
 @dataclass
@@ -46,21 +47,17 @@ class CrossRefRecord:
 
 
 def is_doi(s: str) -> bool:
-    s = s.strip()
-    if s.lower().startswith("doi:"):
-        s = s[4:]
-    if "doi.org/" in s:
-        s = s.split("doi.org/", 1)[1]
-    return bool(DOI_RE.match(s))
+    return bool(DOI_RE.match(normalize_doi(s)))
 
 
 def normalize_doi(s: str) -> str:
     s = s.strip()
     if s.lower().startswith("doi:"):
         s = s[4:]
-    if "doi.org/" in s:
-        s = s.split("doi.org/", 1)[1]
-    return s
+    match = DOI_IN_TEXT_RE.search(s)
+    if not match:
+        return s
+    return match.group(0).rstrip(".,;)")
 
 
 def _record_from_message(msg: dict[str, Any]) -> CrossRefRecord:

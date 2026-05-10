@@ -49,6 +49,11 @@ eqa --dry-run "attention is all you need"
 eqa --app "EndNote 20" 10.1038/s41586-020-2649-2
 ```
 
+If a publisher blocks the automated PDF request with a Cloudflare challenge,
+`eqa` opens the DOI/publisher page in your normal browser. Log in through your
+university access there, download the PDF manually, then rerun with
+`--pdf ~/Downloads/paper.pdf` to attach it.
+
 ## How it works
 
 1. **Resolve** the input via the CrossRef API. DOI → direct lookup; title →
@@ -59,6 +64,8 @@ eqa --app "EndNote 20" 10.1038/s41586-020-2649-2
    - **Publisher URL** directly (works on always-on VPN / on-campus). The tool
      looks for `<meta name="citation_pdf_url">` on the landing page.
    - **Sci-Hub** mirror (optional, configured in `scihub_mirror`).
+   If a publisher page presents a Cloudflare challenge, the tool does not try to
+   bypass it. It opens the article URL in your browser for manual login/download.
 3. **Write a RIS file** mapping CrossRef metadata to RIS tags, with `L1  -
    file://...` so EndNote attaches the PDF.
 4. **Hand off to EndNote** via `open -a "EndNote 21" citation.ris`. EndNote's

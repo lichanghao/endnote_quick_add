@@ -8,6 +8,7 @@ import requests_mock
 from endnote_quick_add.pdf_fetcher import (
     _extract_arxiv_id,
     fetch_pdf,
+    fetch_pdf_with_handoff,
     use_local_pdf,
 )
 from endnote_quick_add.resolver import CrossRefRecord
@@ -115,6 +116,66 @@ def test_publisher_extracts_citation_pdf_url(tmp_path: Path):
     assert result is not None
     assert result.source == "publisher"
     assert "publisher: ok" in log
+
+
+def test_publisher_reports_cloudflare_challenge(tmp_path: Path):
+    rec = make_record(url="https://journals.aps.org/prl/abstract/10.1103/lk32-njx7")
+    with requests_mock.Mocker() as m:
+        m.get(
+            "https://journals.aps.org/prl/abstract/10.1103/lk32-njx7",
+            status_code=403,
+            headers={"cf-mitigated": "challenge"},
+            text="<html>challenge</html>",
+        )
+        result, log = fetch_pdf(
+            rec,
+            cache_dir=tmp_path,
+            unpaywall_email=None,
+            scihub_mirror=None,
+        )
+    assert result is None
+    assert any("Cloudflare challenge" in line for line in log)
+
+
+def test_publisher_cloudflare_challenge_returns_browser_handoff(tmp_path: Path):
+    rec = make_record(url="https://journals.aps.org/prl/abstract/10.1103/lk32-njx7")
+    with requests_mock.Mocker() as m:
+        m.get(
+            "https://journals.aps.org/prl/abstract/10.1103/lk32-njx7",
+            status_code=403,
+            headers={"cf-mitigated": "challenge"},
+            text="<html>challenge</html>",
+        )
+        result, log, handoff = fetch_pdf_with_handoff(
+            rec,
+            cache_dir=tmp_path,
+            unpaywall_email=None,
+            scihub_mirror=None,
+        )
+    assert result is None
+    assert any("Cloudflare challenge" in line for line in log)
+    assert handoff is not None
+    assert handoff.url == "https://journals.aps.org/prl/abstract/10.1103/lk32-njx7"
+
+
+def test_cloudflare_server_challenge_is_detected(tmp_path: Path):
+    rec = make_record(url="https://publisher.example/paper")
+    with requests_mock.Mocker() as m:
+        m.get(
+            "https://publisher.example/paper",
+            status_code=503,
+            headers={"Server": "cloudflare"},
+            text="<html><title>Just a moment...</title></html>",
+        )
+        result, _, handoff = fetch_pdf_with_handoff(
+            rec,
+            cache_dir=tmp_path,
+            unpaywall_email=None,
+            scihub_mirror=None,
+        )
+    assert result is None
+    assert handoff is not None
+    assert handoff.url == "https://publisher.example/paper"
 
 
 def test_all_sources_fail_returns_none(tmp_path: Path):
